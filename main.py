@@ -1,73 +1,148 @@
-import os import logging from aiogram import Bot, Dispatcher, executor, types from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton from keep_alive import keep_alive
+from flask import Flask
+from keep_alive import keep_alive
+from telebot import TeleBot, types
+import os
+import threading
+import time
+import pytz
+from datetime import datetime
 
-Logging
+bot = TeleBot(os.getenv("BOT_TOKEN"))
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+GROUP_ID = int(os.getenv("GROUP_ID"))
+INVIT_LINK = os.getenv("INVIT_LINK")
 
-logging.basicConfig(level=logging.INFO)
+confirmed_users = set()
 
-Variables d'environnement
+@bot.message_handler(commands=["start"])
+def welcome_user(message):
+    welcome = """👋 Salut et bienvenue sur *KevyFlow Africa Bot* 😎⚔️
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") ADMIN_ID = int(os.getenv("ADMIN_ID")) GROUP_ID = int(os.getenv("GROUP_ID")) INVIT_LINK = os.getenv("INVIT_LINK")
+Ce canal est réservé aux membres ayant payé l'accès 🔐
 
-bot = Bot(token=BOT_TOKEN) dp = Dispatcher(bot)
+🎟️ *PRIX À PAYER : 2500F*
 
-Clavier des moyens de paiement
+*Étapes à suivre :*
+1️⃣ Choisissez une méthode de paiement 💵  
+2️⃣ Envoyez une capture d'écran du paiement 🧾  
+3️⃣ Votre capture sera traitée. Après validation, vous serez ajouté ✅
+"""
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn1 = types.InlineKeyboardButton("🟠 Orange Money 💰", callback_data="orange")
+    btn2 = types.InlineKeyboardButton("🟡 MTN Money 💰", callback_data="mtn")
+    btn3 = types.InlineKeyboardButton("🔵 Wave 💰", callback_data="wave")
+    markup.add(btn1, btn2, btn3)
+    bot.send_message(message.chat.id, welcome, reply_markup=markup, parse_mode="Markdown")
 
-payment_keyboard = InlineKeyboardMarkup(row_width=1) payment_keyboard.add( InlineKeyboardButton("🟠 Orange Money 💰", callback_data="orange"), InlineKeyboardButton("🟡 MTN Money 💰", callback_data="mtn"), InlineKeyboardButton("🔵 Wave 💰", callback_data="wave") )
+@bot.callback_query_handler(func=lambda call: call.data in ["orange", "wave", "mtn"])
+def handle_payment(call):
+    methods = {
+        "orange": "+2250768388770",
+        "wave": "+2250768388770",
+        "mtn": "+2250504652480"
+    }
+    name = {
+        "orange": "🟠 Orange Money 💰",
+        "wave": "🔵 Wave 💰",
+        "mtn": "🟡 MTN Money 💰"
+    }
 
-Dictionnaire des numéros de paiement
+    number = methods[call.data]
 
-payment_numbers = { "orange": "+2250768388770", "mtn": "+2250504652480", "wave": "+2250768388770"  # Même numéro pour wave }
+    text = f"""✅ Vous avez choisi *{name[call.data]}*
 
-Message de bienvenue quand l'utilisateur démarre le bot
+Veuillez effectuer le paiement sur ce numéro :  
+`{number}`
 
-@dp.message_handler(commands=['start']) async def start_cmd(message: types.Message): await message.answer( "👋 Salut et bienvenue sur KevyFlowBot !😎⚔️\n\n" "Ce canal est réservé aux membres ayant payé l'accès🔐\n\n" "🎟️ PRIX À PAYER: 2500F\n\n" "Étapes à suivre pour payer:\n" "1️⃣ Choisissez une méthode de paiement 💵\n" "2️⃣ Envoyez une capture d'écran du paiement 🧾\n" "3️⃣ Votre capture sera traitée, après validation vous serez ajouté ✅", reply_markup=payment_keyboard )
+📸 Ensuite, fais une capture d'écran du paiement et envoie-la ici.
+Je t’attends ☺️🙏🏼"""
+    bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
 
-Gestion des boutons de méthode de paiement
+@bot.message_handler(content_types=["photo"])
+def handle_payment_proof(message):
+    if message.chat.type == "private":
+        caption = f"""🧾 *Nouvelle capture reçue !*
 
-@dp.callback_query_handler(lambda c: c.data in payment_numbers) async def handle_payment_choice(callback_query: types.CallbackQuery): method = callback_query.data number = payment_numbers[method]
+👤 Utilisateur : @{message.from_user.username or message.from_user.first_name}  
+🆔 ID : `{message.from_user.id}`
 
-await bot.send_message(
-    callback_query.from_user.id,
-    f"✅ Vous avez choisi ({callback_query.data.upper()})\n\n"
-    f"Veuillez effectuer le paiement sur le numéro suivant :\n👉🏼 {number} 💳\n\n"
-    "Ensuite, faites une capture d'écran du paiement et envoyez-la ici.🤝\n"
-    "Je vous attends ☺️🙏🏼"
-)
-await callback_query.answer()
+Souhaitez-vous valider ?"""
+        markup = types.InlineKeyboardMarkup()
+        btn1 = types.InlineKeyboardButton("✅ Valider", callback_data=f"valider_{message.from_user.id}")
+        btn2 = types.InlineKeyboardButton("❌ Refuser", callback_data=f"refuser_{message.from_user.id}")
+        markup.add(btn1, btn2)
+        bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption, reply_markup=markup, parse_mode="Markdown")
 
-Réception de la capture d'écran de paiement
+@bot.callback_query_handler(func=lambda call: call.data.startswith("valider_") or call.data.startswith("refuser_"))
+def handle_validation(call):
+    user_id = int(call.data.split("_")[1])
+    if call.data.startswith("valider_"):
+        text = """🎉 *Félicitations !*
 
-@dp.message_handler(content_types=types.ContentType.PHOTO) async def handle_photo(message: types.Message): if message.photo: photo_id = message.photo[-1].file_id caption = ( f"🧾 Nouvelle capture d'écran reçue !\n" f"👤 De: @{message.from_user.username or message.from_user.full_name}\n" f"🆔 ID: {message.from_user.id}" )
+Ta capture a été validée avec succès ✅  
+Clique sur le bouton ci-dessous pour rejoindre le canal privé 👇🏼"""
+        markup = types.InlineKeyboardMarkup()
+        join = types.InlineKeyboardButton("🔓 Rejoindre le canal", url=INVIT_LINK)
+        markup.add(join)
+        bot.send_message(user_id, text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        bot.send_message(user_id, "😩 Dommage ! Ta capture a été refusée. Réessaie ou contacte le support.")
 
-keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("✅ Valider", callback_data=f"valider_{message.from_user.id}"),
-        InlineKeyboardButton("❌ Refuser", callback_data=f"refuser_{message.from_user.id}")
-    )
+@bot.chat_member_handler()
+def handle_chat_member_update(chat_member_update):
+    user = chat_member_update.new_chat_member.user
+    status = chat_member_update.new_chat_member.status
+    if chat_member_update.chat.id == GROUP_ID:
+        if status == "member":
+            text = f"""🎉 *Bienvenue* @{user.username or user.first_name} dans *KevyFlow Africa 🌍* !
 
-    await bot.send_photo(ADMIN_ID, photo=photo_id, caption=caption, reply_markup=keyboard)
-    await message.reply("✅ Capture reçue. Elle est en cours de vérification par l'administration.")
+Tu es ici pour *gagner*, *progresser* et *te surpasser* 💸🔥  
+👥 Membres actuels, cliquez sur des réactions pour lui souhaiter la bienvenue !"""
+            bot.send_message(GROUP_ID, text, parse_mode="Markdown")
+        elif status == "left":
+            goodbye = f"👋 @{user.username or user.first_name} nous a quittés. On espère te revoir bientôt 😔"
+            bot.send_message(GROUP_ID, goodbye)
 
-Validation ou refus de l'accès par l'admin
+def send_morning():
+    text = """☀️ *Bonjour la famille* 🤠
 
-@dp.callback_query_handler(lambda c: c.data.startswith("valider_") or c.data.startswith("refuser_")) async def process_validation(callback_query: types.CallbackQuery): action, user_id = callback_query.data.split("_") user_id = int(user_id)
+Aujourd’hui est un nouveau jour pour de nouveaux *gains* !  
+Bonne humeur, bonne vibes et concentration 🔥🎯
 
-if action == "valider":
-    await bot.send_message(user_id,
-        "🎉 Félicitations !\n"
-        "Ta capture a été validée avec succès.\n"
-        "Clique sur le bouton ci-dessous pour rejoindre le canal privé 👇🏼")
+🗳️ *Prêt pour les gains d’aujourd’hui ?* 🤞🏼🥲"""
+    poll = {
+        "question": "Prêt pour les gains d’aujourd’hui ? 🤞🏼🥲",
+        "options": ["Oui 🫂😋", "Non 🙂‍↔️😩", "Dans un instant 🕝😎"]
+    }
+    bot.send_message(GROUP_ID, text, parse_mode="Markdown")
+    bot.send_poll(GROUP_ID, poll["question"], poll["options"])
 
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("🚀 Rejoindre le canal", url=INVIT_LINK))
+def send_night():
+    text = """🌙 *Bonne nuit la team KevyFlow Africa 🌍*
 
-    await bot.send_message(user_id, "👇🏼 Clique ici :", reply_markup=keyboard)
-else:
-    await bot.send_message(user_id,
-        "😔 Dommage !\n"
-        "Ta capture n'a pas été acceptée. Veuillez réessayer ou contacter l'assistance.")
+📌 Qui ne risque rien 🙅🏼‍♂️ n’a rien ❌  
+C’est quand tu *ne sais pas* que t’es en danger. Si tu sais, tu l’es plus 😎
 
-await callback_query.answer()
+🗳️ *La journée a été ?*"""
+    poll = {
+        "question": "La journée a été ?",
+        "options": ["✅ De gains", "❌ De pertes", "🌀 Moyenne"]
+    }
+    bot.send_message(GROUP_ID, text, parse_mode="Markdown")
+    bot.send_poll(GROUP_ID, poll["question"], poll["options"])
 
-if name == 'main': keep_alive() executor.start_polling(dp, skip_updates=True)
+# Lancement du bot
+keep_alive()
 
+def schedule_loop():
+    tz = pytz.timezone("Africa/Abidjan")
+    while True:
+        now = datetime.now(tz)
+        if now.hour == 7 and now.minute == 30:
+            send_morning()
+        if now.hour == 23 and now.minute == 0:
+            send_night()
+        time.sleep(60)
+
+threading.Thread(target=schedule_loop).start()
+bot.infinity_polling()
